@@ -1,7 +1,7 @@
 #coding: utf-8
 
 import sys, os, glob, zipfile, shutil
-import sublime, sublime_plugin, threading
+import sublime, sublime_plugin, threading, re, platform, subprocess
 
 def get_members(zip):
     parts = []
@@ -18,21 +18,75 @@ def get_members(zip):
             zipinfo.filename = name[offset:]
             yield zipinfo
 
-class AppEngineBuildCommand(sublime_plugin.WindowCommand):
+def is_osx():
+  return re.search(r'darwin', platform.system(), re.I) != None
+
+def run_os_command(cmd):
+  exit_code = subprocess.call(cmd, shell=True)
+  if exit_code > 0:
+    raise Exception("The command '" + cmd + "' has been terminated with exit code " + str(exit_code))
+
+
+class AppEngineEndpointsBuildAllCommand(sublime_plugin.WindowCommand):
   def run(self, paths = []):
-    settings = sublime.load_settings('AppEngineBuild.sublime-settings')
+    build_thread = AppEngineEndpointsBuildThread(paths=paths, android=True, ios=True)
+    build_thread.start()
 
-    endpointscfg = settings.get('endpointscfg')
-    gradle = settings.get('gradle')
+  def is_visible(self, paths = []):
+    return is_osx()
 
-    project_path = paths[0] 
-    settings.get(project_path)
-    if settings.get(project_path) != None:
-      project_name = settings.get(project_path).get('project_name')
-      api_name = settings.get(project_path).get('api_name')
 
-      os.chdir(project_path)
-      os.system(endpointscfg+" get_client_lib java -bs gradle " + project_name + "." + api_name)
+class AppEngineEndpointsBuildAndroidCommand(sublime_plugin.WindowCommand):
+  def run(self, paths = []):
+    build_thread = AppEngineEndpointsBuildThread(paths=paths, android=True)
+    build_thread.start()
+
+
+class AppEngineEndpointsBuildIosCommand(sublime_plugin.WindowCommand):
+  def run(self, paths = []):
+    build_thread = AppEngineEndpointsBuildThread(paths=paths, ios=True)
+    build_thread.start()
+
+  def is_visible(self, paths = []):
+    return is_osx()
+
+
+
+class AppEngineEndpointsBuildThread(threading.Thread):
+
+  def __init__(self, paths=[], android=False, ios=False):
+    self.paths = paths
+    self.android = android
+    self.ios = ios
+    self.settings = sublime.load_settings('AppEngineBuild.sublime-settings')
+    threading.Thread.__init__(self)
+
+  def run(self):
+    project_path = self.paths[0]
+
+    if self.settings.get(project_path) != None:
+      if(self.android):
+        self.buildAndroid()
+      if(self.ios):
+        self.buildIOS()
+    else:
+      sublime.error_message("Project \""+project_path+"\" not found in \"AppEngine Build -> user.settings\"")
+
+
+  def buildAndroid(self):
+    endpointscfg = self.settings.get('tools').get('endpointscfg')
+    gradle = self.settings.get('tools').get('gradle')
+    project_path = self.paths[0]
+
+    sublime.status_message("Building AppEngine client lib for Android...")
+
+    apis = self.settings.get(project_path).get('apis')
+    apis_str = ' '.join(api.get('module') + '.' + api.get('class') for api in apis)
+
+    os.chdir(project_path)
+
+    try:
+      run_os_command(endpointscfg+" get_client_lib java -bs gradle " + apis_str)
 
       to_dir = "extracted-files"
       for file in glob.glob("*.zip"):
@@ -41,9 +95,15 @@ class AppEngineBuildCommand(sublime_plugin.WindowCommand):
         os.remove(file)
 
       os.chdir(to_dir)
-      os.system(gradle+" install")
+      run_os_command(gradle+" install")
+        
       os.chdir("../")
       shutil.rmtree(to_dir)
-      sublime.status_message("Build finished!")
-    else:
-      sublime.error_message("Project \""+project_path+"\" not found in \"AppEngine Build -> user.settings\"")
+      sublime.status_message("Android build finished!")
+
+    except Exception as e:
+      sublime.error_message("Android build failed:\n" + str(e))
+
+
+  def buildIOS(self):
+    sublime.status_message("iOS Build finished!")
